@@ -7,6 +7,16 @@ interface HistoryItem {
     user_idea: string;      // 백엔드 반환 필드명 (기존 idea_text → user_idea 확정)
     timestamp?: string;
     risk_level?: string;
+    score?: number;
+    riskScore?: number;
+    analysis?: {
+        similarity?: {
+            score?: number;
+        };
+        infringement?: {
+            risk_level?: string;
+        };
+    };
 }
 
 interface HistorySidebarProps {
@@ -29,6 +39,38 @@ export function HistorySidebar({ onSelectIdea, isAnalyzing, refreshTrigger }: Hi
     const [keyword, setKeyword] = useState('');
     const [sortBy, setSortBy] = useState('desc');
 
+    const toRiskRank = (item: HistoryItem): number => {
+        if (typeof item.score === 'number' && Number.isFinite(item.score)) return item.score;
+        if (typeof item.riskScore === 'number' && Number.isFinite(item.riskScore)) return item.riskScore;
+        const nestedScore = item.analysis?.similarity?.score;
+        if (typeof nestedScore === 'number' && Number.isFinite(nestedScore)) return nestedScore;
+        const risk = (item.risk_level || item.analysis?.infringement?.risk_level || '').toLowerCase();
+        if (risk === 'high') return 90;
+        if (risk === 'medium') return 60;
+        if (risk === 'low') return 30;
+        return 0;
+    };
+
+    const sortHistories = (items: HistoryItem[], mode: string): HistoryItem[] => {
+        const copied = [...items];
+        if (mode === 'asc') {
+            return copied.sort(
+                (a, b) =>
+                    new Date(a.timestamp || 0).getTime() - new Date(b.timestamp || 0).getTime(),
+            );
+        }
+        if (mode === 'risk_desc') {
+            return copied.sort((a, b) => toRiskRank(b) - toRiskRank(a));
+        }
+        if (mode === 'risk_asc') {
+            return copied.sort((a, b) => toRiskRank(a) - toRiskRank(b));
+        }
+        return copied.sort(
+            (a, b) =>
+                new Date(b.timestamp || 0).getTime() - new Date(a.timestamp || 0).getTime(),
+        );
+    };
+
     // 히스토리 데이터 조회 (Query Parameter + X-Session-ID 헤더)
     const fetchHistory = useCallback(async () => {
         setIsLoading(true);
@@ -46,7 +88,9 @@ export function HistorySidebar({ onSelectIdea, isAnalyzing, refreshTrigger }: Hi
             });
             if (!res.ok) throw new Error(`서버 응답 오류: ${res.status}`);
             const data = await res.json();
-            setHistories(data.history || []);
+            const rawHistories: HistoryItem[] = Array.isArray(data.history) ? data.history : [];
+            // 백엔드 구버전/혼합 응답에도 정렬 UX가 깨지지 않도록 프론트에서 1차 보정
+            setHistories(sortHistories(rawHistories, sortBy));
         } catch (err) {
             console.error('[HistorySidebar] 히스토리 조회 실패:', err);
             setFetchError('히스토리를 불러오지 못했습니다.');
@@ -68,10 +112,11 @@ export function HistorySidebar({ onSelectIdea, isAnalyzing, refreshTrigger }: Hi
 
     // 위험도 뱃지 색상 결정
     const getRiskBadgeStyle = (riskLevel?: string) => {
-        switch (riskLevel) {
-            case 'High': return 'bg-red-100 text-red-700';
-            case 'Medium': return 'bg-yellow-100 text-yellow-700';
-            case 'Low': return 'bg-green-100 text-green-700';
+        const normalized = (riskLevel || '').toLowerCase();
+        switch (normalized) {
+            case 'high': return 'bg-red-100 text-red-700';
+            case 'medium': return 'bg-yellow-100 text-yellow-700';
+            case 'low': return 'bg-green-100 text-green-700';
             default: return 'bg-gray-100 text-gray-500';
         }
     };

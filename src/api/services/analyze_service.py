@@ -13,14 +13,15 @@ async def process_analysis_stream(
     request: AnalyzeRequest,
     agent: PatentAgent,
     history: HistoryManager,
-    user_id: Optional[int] = None
+    user_id: Optional[int] = None,
+    session_id: Optional[str] = None,
 ) -> AsyncGenerator[str, None]:
     """
     Process analysis and stream results using standard SSE format (event + data).
     Ref: [Issue #51] 스트리밍 UI 버그 수정 - SSE 표준 규격 준수
     """
-    session_id = request.session_id
-    logger.info(f"[AnalysisStart] New request - Session: {session_id}, User: {user_id}, Hybrid: {request.use_hybrid}")
+    effective_session_id = session_id or request.session_id or "anonymous"
+    logger.info(f"[AnalysisStart] New request - Session: {effective_session_id}, User: {user_id}, Hybrid: {request.use_hybrid}")
     
     try:
         # 1. Start pipeline: Send initial setup/metadata
@@ -31,27 +32,36 @@ async def process_analysis_stream(
         # Security sanitization happens inside agent.analyze but let's do initial check
         try:
             sanitized_idea = sanitize_user_input(request.user_idea)
-            logger.info(f"[AnalysisStage] Security check passed (Session: {session_id})")
+            logger.info(f"[AnalysisStage] Security check passed (Session: {effective_session_id})")
         except PromptInjectionError as e:
-            logger.error(f"[Security] Analysis blocked (Session: {session_id}): {e}")
+            logger.error(f"[Security] Analysis blocked (Session: {effective_session_id}): {e}")
             yield "event: error\n"
             yield f"data: {json.dumps({'detail': str(e), 'error_type': 'SecurityError'})}\n\n"
             return
  
         # 2. Search & initial grading
         # percent: 20 -> 검색 시작
-        logger.info(f"[AnalysisStage] Starting patent search (Session: {session_id})")
+        logger.info(f"[AnalysisStage] Starting patent search (Session: {effective_session_id})")
         yield "event: progress\n"
         yield f"data: {json.dumps({'percent': 20, 'message': '특허 데이터베이스 검색 및 1차 검증 중...'})}\n\n"
         results = await agent.search_with_grading(sanitized_idea, use_hybrid=request.use_hybrid, ipc_filters=request.ipc_filters)
         
         if not results:
-            logger.warning(f"[AnalysisComplete] No patents found (Session: {session_id})")
-            yield "event: empty\n"
-            yield f"data: {json.dumps({'message': '관련 특허를 찾지 못했습니다.'})}\n\n"
+            if getattr(agent, "degraded", False):
+                detail = (
+                    "벡터 DB 연결이 비활성화되어 유사 특허 검색을 수행할 수 없습니다. "
+                    "Pinecone SDK/네트워크/API 키/인덱스 상태를 확인하세요."
+                )
+                logger.error(f"[AnalysisError] Vector DB unavailable (Session: {effective_session_id})")
+                yield "event: error\n"
+                yield f"data: {json.dumps({'detail': detail, 'error_type': 'VECTOR_DB_UNAVAILABLE'})}\n\n"
+            else:
+                logger.warning(f"[AnalysisComplete] No patents found (Session: {effective_session_id})")
+                yield "event: empty\n"
+                yield f"data: {json.dumps({'message': '관련 특허를 찾지 못했습니다.'})}\n\n"
             return
             
-        logger.info(f"[AnalysisStage] Found {len(results)} relevant patents (Session: {session_id})")
+        logger.info(f"[AnalysisStage] Found {len(results)} relevant patents (Session: {effective_session_id})")
         
         # Send search results (percent: 50 -> 검색 결과 요약 송신)
         search_results_data = [
@@ -74,7 +84,7 @@ async def process_analysis_stream(
         
         # 3. Stream Critical Analysis
         # percent: 60-90 -> 생성형 AI 분석 진행 중 (UI에서 부드럽게 증가하도록 구현 권장)
-        logger.info(f"[AnalysisStage] Starting AI critical report generation (Session: {session_id})")
+        logger.info(f"[AnalysisStage] Starting AI critical report generation (Session: {effective_session_id})")
         yield "event: progress\n"
         yield f"data: {json.dumps({'percent': 70, 'message': '생성형 AI를 통한 기술 유사도 및 침해 리스크 심위 분석 중...'})}\n\n"
         
@@ -89,11 +99,11 @@ async def process_analysis_stream(
                 yield "event: progress\n"
                 yield f"data: {json.dumps({'percent': 85, 'message': 'AI 리포트 작성 중...'})}\n\n"
             
-        logger.info(f"[AnalysisStage] AI report generation complete. Chunks: {chunk_count} (Session: {session_id})")
+        logger.info(f"[AnalysisStage] AI report generation complete. Chunks: {chunk_count} (Session: {effective_session_id})")
             
         # 4. Final structured results (GPT structured parsing replacement)
         # percent: 95 -> 분석 텍스트 구조화 중
-        logger.info(f"[AnalysisStage] Parsing stream to structured format (Session: {session_id})")
+        logger.info(f"[AnalysisStage] Parsing stream to structured format (Session: {effective_session_id})")
         yield "event: progress\n"
         yield f"data: {json.dumps({'percent': 95, 'message': '결과 리포트 최종 검토 및 구조화 중...'})}\n\n"
         
@@ -135,10 +145,12 @@ async def process_analysis_stream(
         yield f"data: {json.dumps({'percent': 100, 'result': final_result})}\n\n"
         
         # Save to history after successful stream
-        logger.info(f"[AnalysisComplete] Success. Saving to history (Session: {session_id})")
-        history.save_analysis(final_result, session_id=request.session_id, user_id=user_id)
+        logger.info(f"[AnalysisComplete] Success. Saving to history (Session: {effective_session_id})")
+        saved = history.save_analysis(final_result, session_id=effective_session_id, user_id=user_id)
+        if not saved:
+            logger.warning(f"[AnalysisComplete] History save failed (Session: {effective_session_id})")
         
     except Exception as e:
-        logger.error(f"[AnalysisError] Failed for session {session_id}: {str(e)}", exc_info=True)
+        logger.error(f"[AnalysisError] Failed for session {effective_session_id}: {str(e)}", exc_info=True)
         yield "event: error\n"
         yield f"data: {json.dumps({'detail': f'분석 중 오류 발생: {str(e)}'})}\n\n"

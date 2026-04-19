@@ -14,26 +14,39 @@ const SESSION_KEY = 'shortcut_session_id';
  * localStorage에 저장된 ID가 없으면 새 UUID를 생성하여 저장 후 반환합니다.
  */
 export function getSessionId(): string {
+    const generateUUID = () => {
+        try {
+            if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+                return crypto.randomUUID();
+            }
+        } catch (e) {
+            console.warn('crypto.randomUUID failed, falling back to Math.random', e);
+        }
+        // Fallback for non-secure contexts or older browsers
+        return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
+            const r = (Math.random() * 16) | 0;
+            const v = c === 'x' ? r : (r & 0x3) | 0x8;
+            return v.toString(16);
+        });
+    };
+
     try {
-        // localStorage 우선: 브라우저 재방문 시에도 동일 ID 유지
         let sessionId = localStorage.getItem(SESSION_KEY);
         if (!sessionId) {
-            sessionId = crypto.randomUUID();
+            sessionId = generateUUID();
             localStorage.setItem(SESSION_KEY, sessionId);
         }
         return sessionId;
     } catch {
-        // 시크릿 모드 또는 보안 정책으로 localStorage 접근 불가 시 sessionStorage fallback
         try {
             let sessionId = sessionStorage.getItem(SESSION_KEY);
             if (!sessionId) {
-                sessionId = crypto.randomUUID();
+                sessionId = generateUUID();
                 sessionStorage.setItem(SESSION_KEY, sessionId);
             }
             return sessionId;
         } catch {
-            // 최후 수단: 탭 생명주기 동안만 유효한 인메모리 UUID 반환
-            return crypto.randomUUID();
+            return generateUUID();
         }
     }
 }

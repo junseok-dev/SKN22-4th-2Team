@@ -1,6 +1,7 @@
 import os
 import uuid
 import logging
+import socket
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -42,7 +43,7 @@ from src.config import config
 
 from contextlib import asynccontextmanager
 from src.api.v1.router import router as api_v1_router
-from src.database.connection import Base, get_engine, verify_db_connection
+from src.database.connection import Base, get_engine, verify_db_connection, ensure_schema_compatibility
 from src.utils import configure_json_logging
 from src.api.middleware import SecurityMiddleware
 from src.security import PromptInjectionError
@@ -52,6 +53,15 @@ from slowapi.errors import RateLimitExceeded
 
 # Initialize rate limiter
 limiter = Limiter(key_func=get_remote_address)
+
+
+def _check_tcp_connectivity(host: str, port: int = 443, timeout: float = 2.0) -> bool:
+    """Lightweight outbound TCP connectivity probe for dependency health checks."""
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
 
 
 @asynccontextmanager
@@ -78,6 +88,7 @@ async def lifespan(app: FastAPI):
         from fastapi.concurrency import run_in_threadpool
         # get_engine()을 호출해야 bootstrap_secrets() 이후 주입된 DATABASE_URL로 엔진이 생성됩니다.
         await run_in_threadpool(Base.metadata.create_all, bind=get_engine())
+        await run_in_threadpool(ensure_schema_compatibility)
         
         # DB 연결 검증 (RDS PostgreSQL 또는 SQLite 폴백 확인)
         db_status = await run_in_threadpool(verify_db_connection)
@@ -237,7 +248,15 @@ def create_app() -> FastAPI:
         """Root 접속 시 프론트엔드 메인 페이지 반환 (ALB 헬스체크 200 OK)"""
         if os.path.exists(index_file):
             logger.info(f"Serving index.html from {index_file}")
-            return FileResponse(index_file)
+            return FileResponse(
+                index_file,
+                headers={
+                    # SPA 엔트리 파일은 캐시 금지하여 최신 번들 해시를 즉시 반영
+                    "Cache-Control": "no-store, no-cache, must-revalidate",
+                    "Pragma": "no-cache",
+                    "Expires": "0",
+                },
+            )
         
         logger.error(f"Frontend index.html not found at {index_file}")
         return {
@@ -252,10 +271,16 @@ def create_app() -> FastAPI:
         """상태 점검 엔드포인트 (DB 연결 상태 포함)"""
         from fastapi.concurrency import run_in_threadpool
         db_status = await run_in_threadpool(verify_db_connection)
+        pinecone_reachable = await run_in_threadpool(_check_tcp_connectivity, "api.pinecone.io", 443, 2.0)
+        openai_reachable = await run_in_threadpool(_check_tcp_connectivity, "api.openai.com", 443, 2.0)
         return {
             "status": "ok",
             "message": "Healthy",
             "database": db_status,
+            "dependencies": {
+                "pinecone_api_tcp_443": pinecone_reachable,
+                "openai_api_tcp_443": openai_reachable,
+            },
         }
 
     # API 라우트들을 먼저 등록한 후, 나머지 모든 경로를 정적 파일로 마운트

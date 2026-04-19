@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback } from 'react';
-import { RagAnalysisResult } from '../types/rag';
+import { RagAnalysisResult, PatentContext } from '../types/rag';
 import { getSessionId } from '../utils/session';
 import type { ErrorType } from '../components/common/ErrorFallback';
 
@@ -7,6 +7,86 @@ export interface RagErrorInfo {
     title: string;
     message: string;
     errorType?: ErrorType; // ErrorFallback 타입 기반 분기를 위한 에러 종류
+}
+
+function toFiniteNumber(value: unknown, fallback = 0): number {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : fallback;
+}
+
+function clampPercent(value: number): number {
+    if (!Number.isFinite(value)) return 0;
+    return Math.max(0, Math.min(100, Math.round(value)));
+}
+
+function normalizeRiskLevel(raw: unknown): 'Low' | 'Medium' | 'High' {
+    const level = String(raw || '').toLowerCase();
+    if (level.startsWith('h')) return 'High';
+    if (level.startsWith('m')) return 'Medium';
+    if (level.startsWith('l')) return 'Low';
+    return 'Medium';
+}
+
+function normalizeUniqueness(raw: unknown, riskLevel: 'Low' | 'Medium' | 'High'): 'Low' | 'Medium' | 'High' {
+    const value = String(raw || '').toLowerCase();
+    if (value.startsWith('h')) return 'High';
+    if (value.startsWith('m')) return 'Medium';
+    if (value.startsWith('l')) return 'Low';
+
+    // 위험도가 높을수록 차별성은 낮다고 가정
+    if (riskLevel === 'High') return 'Low';
+    if (riskLevel === 'Low') return 'High';
+    return 'Medium';
+}
+
+function normalizeSimilarity(raw: unknown): number {
+    const score = toFiniteNumber(raw, 0);
+    const percent = score <= 1 ? score * 100 : score;
+    return clampPercent(percent);
+}
+
+function normalizeTopPatents(raw: any): PatentContext[] {
+    if (Array.isArray(raw?.topPatents)) {
+        return raw.topPatents.map((p: any, idx: number) => ({
+            id: String(p?.id || p?.patent_id || `PAT-${idx + 1}`),
+            similarity: normalizeSimilarity(p?.similarity),
+            title: String(p?.title || '제목 정보 없음'),
+            summary: String(p?.summary || p?.abstract || p?.grading_reason || '').slice(0, 500),
+        }));
+    }
+
+    const fromSearch = Array.isArray(raw?.search_results) ? raw.search_results : [];
+    return fromSearch.slice(0, 5).map((p: any, idx: number) => ({
+        id: String(p?.patent_id || p?.id || p?.publication_number || `PAT-${idx + 1}`),
+        similarity: normalizeSimilarity(p?.grading_score ?? p?.rrf_score ?? p?.dense_score ?? p?.score),
+        title: String(p?.title || '제목 정보 없음'),
+        summary: String(p?.grading_reason || p?.abstract || p?.claims || '').slice(0, 500),
+    }));
+}
+
+function normalizeRagResult(raw: any): RagAnalysisResult {
+    const riskLevel = normalizeRiskLevel(raw?.riskLevel ?? raw?.analysis?.infringement?.risk_level);
+    const topPatents = normalizeTopPatents(raw);
+
+    let riskScore = toFiniteNumber(raw?.riskScore, NaN);
+    if (!Number.isFinite(riskScore)) {
+        riskScore = toFiniteNumber(raw?.analysis?.similarity?.score, NaN);
+    }
+    if (!Number.isFinite(riskScore)) {
+        riskScore = riskLevel === 'High' ? 80 : riskLevel === 'Low' ? 30 : 55;
+    }
+
+    const similarCount = Number.isFinite(Number(raw?.similarCount))
+        ? Math.max(0, Math.round(Number(raw.similarCount)))
+        : (Array.isArray(raw?.search_results) ? raw.search_results.length : topPatents.length);
+
+    return {
+        riskLevel,
+        riskScore: clampPercent(riskScore),
+        similarCount,
+        uniqueness: normalizeUniqueness(raw?.uniqueness, riskLevel),
+        topPatents,
+    };
 }
 
 export function useRagStream() {
@@ -20,6 +100,7 @@ export function useRagStream() {
 
     // 진행중인 fetch 요청을 취소하기 위한 AbortController
     const abortControllerRef = useRef<AbortController | null>(null);
+    const idleTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
     const startAnalysis = useCallback(async (
         userIdea: string,
@@ -42,13 +123,24 @@ export function useRagStream() {
         const abortController = new AbortController();
         abortControllerRef.current = abortController;
 
-        // 60초 완전 타임아웃 타이머
+        const MAX_TIMEOUT_MS = 300000; // 전체 분석 상한: 5분
+        const IDLE_TIMEOUT_MS = 120000; // 무응답 상한: 2분
+
+        const resetIdleTimeout = () => {
+            if (idleTimeoutRef.current) clearTimeout(idleTimeoutRef.current);
+            idleTimeoutRef.current = setTimeout(() => {
+                if (abortControllerRef.current) {
+                    abortControllerRef.current.abort(new Error('TIMEOUT'));
+                }
+            }, IDLE_TIMEOUT_MS);
+        };
+
         const timeoutId = setTimeout(() => {
             if (abortControllerRef.current) {
-                // 타임아웃 발생 시 에러명 지정 호출
                 abortControllerRef.current.abort(new Error('TIMEOUT'));
             }
-        }, 60000);
+        }, MAX_TIMEOUT_MS);
+        resetIdleTimeout();
 
         try {
             // 백엔드 FastAPI SSE 엔드포인트 호출 (POST)
@@ -56,9 +148,10 @@ export function useRagStream() {
             // 운영 환경(Docker)에서 같은 origin인 경우 서버 주소 생략(상대경로) 가능하도록 기본값 '' 설정
             const apiUrl = import.meta.env.VITE_API_BASE_URL || '';
             // 백엔드 AnalyzeRequest 스키마 필드명에 맞춰 요청 Body 구성
+            const sessionId = getSessionId();
             const reqBody = {
                 user_idea: userIdea,
-                user_id: getSessionId(), // UUID 세션 ID 사용 (Issue #24)
+                session_id: sessionId,
                 use_hybrid: useHybrid,
                 ipc_filters: ipcFilters && ipcFilters.length > 0 ? ipcFilters : null,
                 stream: true,
@@ -69,7 +162,7 @@ export function useRagStream() {
                 headers: {
                     'Content-Type': 'application/json',
                     'Accept': 'text/event-stream',
-                    'X-Session-ID': getSessionId(), // Issue #24: 세션 식별자 헤더
+                    'X-Session-ID': sessionId, // Issue #24: 세션 식별자 헤더
                 },
                 body: JSON.stringify(reqBody),
                 signal: abortController.signal
@@ -113,6 +206,7 @@ export function useRagStream() {
             while (true) {
                 const { value, done } = await reader.read();
                 if (done) break;
+                resetIdleTimeout();
 
                 // 청크 디코딩 후 버퍼에 누적
                 buffer += decoder.decode(value, { stream: true });
@@ -143,39 +237,59 @@ export function useRagStream() {
                             setIsSkeletonVisible(false);
                             setPercent(parsed.percent ?? 0);
                             setMessage(parsed.message || '분석 중...');
+                            resetIdleTimeout();
                         } else if (eventType === 'complete') {
                             console.info('[useRagStream] Analysis Complete:', parsed.result);
                             setPercent(100);
                             setMessage('분석이 모두 완료되었습니다.');
-                            setResultData(parsed.result);
+                            setResultData(normalizeRagResult(parsed.result));
                             setTimeout(() => {
                                 setIsAnalyzing(false);
                                 setIsComplete(true);
                             }, 1500);
                         } else if (eventType === 'empty') {
                             console.warn('[useRagStream] Received empty event');
-                            throw new Error('NOT_FOUND');
+                            const err = new Error('NOT_FOUND');
+                            (err as any).detail = parsed.message;
+                            throw err;
                         } else if (eventType === 'error') {
                             console.error('[useRagStream] Received error event:', parsed.detail);
-                            throw new Error('NETWORK_ERROR');
+                            const errorType = parsed.error_type || 'SERVER_ERROR';
+                            const err = new Error(errorType);
+                            (err as any).detail = parsed.detail || '백엔드 처리 중 오류가 발생했습니다.';
+                            throw err;
                         }
                     } catch (e: any) {
-                        if (e.message === 'NOT_FOUND' || e.message === 'NETWORK_ERROR') throw e;
+                        if (
+                            e.message === 'NOT_FOUND' ||
+                            e.message === 'NETWORK_ERROR' ||
+                            e.message === 'SERVER_ERROR' ||
+                            e.message === 'VECTOR_DB_UNAVAILABLE'
+                        ) throw e;
                         console.error('[useRagStream] SSE parsing/processing error:', e, 'Raw block:', block);
                     }
                 }
             }
             clearTimeout(timeoutId);
+            if (idleTimeoutRef.current) clearTimeout(idleTimeoutRef.current);
         } catch (error: any) {
             clearTimeout(timeoutId);
+            if (idleTimeoutRef.current) clearTimeout(idleTimeoutRef.current);
+
+            const signalReason = abortControllerRef.current?.signal?.reason as any;
+            const isTimeoutAbort =
+                error?.message === 'TIMEOUT' ||
+                error?.cause?.message === 'TIMEOUT' ||
+                signalReason?.message === 'TIMEOUT';
 
             // AbortController.abort() 발생 시
-            if (error.name === 'AbortError' || error.message === 'TIMEOUT' || (error as any).cause?.message === 'TIMEOUT') {
+            if (error.name === 'AbortError' || isTimeoutAbort) {
                 // DOMException AbortError가 타임아웃 타이머에 의해 트리거된 경우를 명시적으로 체킹하기엔 어렵지만 name 또는 custom error throw 패턴
-                if (error.message === 'TIMEOUT' || (error as any).cause?.message === 'TIMEOUT') {
+                if (isTimeoutAbort) {
                     setErrorInfo({
                         title: '분석 시간 초과 (Timeout) ⏱️',
-                        message: '분석에 시간이 초과되었습니다. 입력을 줄여서 다시 시도해 주세요.'
+                        message: '분석 시간이 길어지고 있습니다. 잠시 후 다시 시도해 주세요.',
+                        errorType: 'TIMEOUT',
                     });
                 } else {
                     console.log('Analysis request aborted by user');
@@ -202,6 +316,12 @@ export function useRagStream() {
                         message: error.detail || '입력하신 내용과 일치하는 선행 특허가 없습니다.',
                         errorType: 'NOT_FOUND',
                     });
+                } else if (error.message === 'VECTOR_DB_UNAVAILABLE') {
+                    setErrorInfo({
+                        title: '특허 DB 연결 오류 🛰️',
+                        message: error.detail || '벡터 DB 연결에 실패했습니다. 서버 설정을 확인해 주세요.',
+                        errorType: 'SERVER_ERROR',
+                    });
                 } else if (error.message === 'SERVER_ERROR') {
                     setErrorInfo({
                         title: '서버 내부 오류 발생 🛠️',
@@ -222,6 +342,10 @@ export function useRagStream() {
             setIsSkeletonVisible(false);
             setPercent(0);
         } finally {
+            if (idleTimeoutRef.current) {
+                clearTimeout(idleTimeoutRef.current);
+                idleTimeoutRef.current = null;
+            }
             abortControllerRef.current = null;
         }
     }, []);

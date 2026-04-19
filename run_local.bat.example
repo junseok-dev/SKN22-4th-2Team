@@ -1,0 +1,16 @@
+@echo off
+rem 로컬 개발용 백엔드 서버 실행 스크립트
+rem 코드 수정 없이 환경 변수를 주입하여 uvicorn을 실행합니다.
+rem 이 파일을 run_local.bat으로 복사하고 아래 값을 실제 키로 교체하세요.
+
+set PYTHONPATH=%~dp0
+set APP_ENV=development
+set JWT_SECRET_KEY=your-jwt-secret-key-here
+set OPENAI_API_KEY=your-openai-api-key-here
+set PINECONE_API_KEY=your-pinecone-api-key-here
+
+echo [INFO] 환경 변수 설정 완료. 백엔드 서버를 시작합니다...
+echo [INFO] APP_ENV=%APP_ENV%
+echo [INFO] PYTHONPATH=%PYTHONPATH%
+
+uvicorn src.api.main:app --reload --port 8000

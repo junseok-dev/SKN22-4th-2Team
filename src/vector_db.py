@@ -24,12 +24,19 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 from tqdm import tqdm
 
+PINECONE_AVAILABLE = False
+PINECONE_IMPORT_ERROR: Optional[str] = None
+
 try:
     from pinecone import Pinecone, ServerlessSpec
-    PINECONE_AVAILABLE = True
     from pinecone_text.sparse import BM25Encoder
-except ImportError:
+    PINECONE_AVAILABLE = True
+except Exception as e:
+    # NOTE:
+    # `pinecone-client`(deprecated)와 `pinecone`이 충돌할 때 ImportError가 아닌
+    # 일반 Exception이 발생할 수 있습니다. (예: "renamed from pinecone-client")
     PINECONE_AVAILABLE = False
+    PINECONE_IMPORT_ERROR = f"{type(e).__name__}: {e}"
 
 from src.config import config, PineconeConfig, EMBEDDINGS_DIR, INDEX_DIR
 
@@ -172,7 +179,13 @@ class PineconeClient:
         skip_init_check: bool = False,
     ):
         if not PINECONE_AVAILABLE:
-            raise ImportError("pinecone is required. Install with: pip install pinecone>=3.0.0")
+            hint = (
+                "pinecone SDK import failed. Install with: pip install 'pinecone>=3.0.0'. "
+                "If `pinecone-client` is installed, uninstall it first: pip uninstall -y pinecone-client."
+            )
+            if PINECONE_IMPORT_ERROR:
+                hint = f"{hint} (cause: {PINECONE_IMPORT_ERROR})"
+            raise ImportError(hint)
         
         self.config = pinecone_config or config.pinecone
         self.embedding_dim = embedding_dim or config.embedding.embedding_dim
@@ -188,15 +201,30 @@ class PineconeClient:
         
         # ── Pinecone 클라이언트 초기화 ──
         if not self.config.api_key:
+            logger.error("PINECONE_API_KEY가 설정되지 않았습니다.")
             raise ValueError("PINECONE_API_KEY not set")
             
-        self.pc = Pinecone(api_key=self.config.api_key)
+        try:
+            self.pc = Pinecone(api_key=self.config.api_key)
+            logger.info("Pinecone 클라이언트 생성 완료.")
+        except Exception as e:
+            logger.error(f"Pinecone 클라이언트 생성 중 치명적 오류: {e}")
+            raise
         
         # 인덱스 존재 확인 (Auto-creation for reset scenarios)
         if not skip_init_check:
-            self._ensure_index_exists()
+            try:
+                self._ensure_index_exists()
+            except Exception as e:
+                logger.error(f"Pinecone 인덱스 확인/생성 실패: {e}")
+                raise
             
-        self.index = self.pc.Index(self.config.index_name)
+        try:
+            self.index = self.pc.Index(self.config.index_name)
+            logger.info(f"Pinecone 인덱스 '{self.config.index_name}' 연결 성공.")
+        except Exception as e:
+            logger.error(f"Pinecone 인덱스 '{self.config.index_name}' 연결 실패: {e}")
+            raise
         
         # ── BM25Encoder 셋업 ──
         # HuggingFace 기반 모델 다운로드 시 컨테이너 환경에서 Permission denied를 방지하기 위해
@@ -206,18 +234,20 @@ class PineconeClient:
         
         try:
             if self.bm25_params_path.exists():
+                logger.info(f"BM25 파라미터 로드 중: {self.bm25_params_path}")
                 self.bm25_encoder = BM25Encoder().load(str(self.bm25_params_path))
-                logger.info(f"Loaded BM25 params from {self.bm25_params_path}")
+                logger.info("BM25 파라미터 로드 완료.")
             else:
+                logger.info("BM25 파라미터 파일이 없습니다. 기본 인코더를 생성합니다.")
                 self.bm25_encoder = BM25Encoder.default()
-                logger.info("Initialized default BM25Encoder (will need fitting)")
+                logger.info("기본 BM25Encoder 생성 완료 (피팅 필요)")
         except Exception as e:
-             logger.warning(f"Failed to load BM25 encoder: {e}. Using empty encoder.")
+             logger.warning(f"BM25 인코더 로드 실패: {e}. 빈 인코더를 사용합니다 (검색 품질 저하 가능).")
              # default() 재호출하면 같은 Permission denied 발생하므로
-             # 빈 인코더로 초기화합니다. 검색 품질은 떨어지지만 서버가 죽지 않습니다.
+             # 빈 인코더로 초기화합니다. 검색 품질은 떨어지지만 서버가 죽지는 않습니다.
              self.bm25_encoder = BM25Encoder()
 
-        logger.info(f"Pinecone Client initialized (index={self.config.index_name})")
+        logger.info(f"Pinecone Client 초기화 최종 완료 (index={self.config.index_name})")
 
     def _ensure_index_exists(self):
         """Check if index exists, create if not (Serverless)."""
@@ -743,7 +773,7 @@ async def main():
     print("=" * 70)
     
     if not PINECONE_AVAILABLE:
-        print("❌ pinecone-client not installed.")
+        print("❌ pinecone SDK is unavailable. Check package installation.")
         return
 
     # Initialize client

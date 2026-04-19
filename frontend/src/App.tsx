@@ -12,14 +12,30 @@ import { AuthGuard } from './components/Auth/AuthGuard';
 function App() {
     const { user, logout, isLoading: authLoading } = useAuth();
     const [authToast, setAuthToast] = useState('');
-    const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const [successToast, setSuccessToast] = useState('');
+    const authToastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const successToastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
     /** 비로그인 시 상단 배너 토스트 표시 (alert 대체) */
     const showAuthToast = (msg: string) => {
         setAuthToast(msg);
-        if (toastTimer.current) clearTimeout(toastTimer.current);
-        toastTimer.current = setTimeout(() => setAuthToast(''), 3000);
+        if (authToastTimer.current) clearTimeout(authToastTimer.current);
+        authToastTimer.current = setTimeout(() => setAuthToast(''), 3000);
     };
+
+    /** 로그인/회원가입 성공 시 상단 배너 토스트 표시 */
+    const showSuccessToast = (msg: string) => {
+        setSuccessToast(msg);
+        if (successToastTimer.current) clearTimeout(successToastTimer.current);
+        successToastTimer.current = setTimeout(() => setSuccessToast(''), 2500);
+    };
+
+    useEffect(() => {
+        return () => {
+            if (authToastTimer.current) clearTimeout(authToastTimer.current);
+            if (successToastTimer.current) clearTimeout(successToastTimer.current);
+        };
+    }, []);
     const [isGuest, setIsGuest] = useState(true);
     const [authView, setAuthView] = useState<'login' | 'signup'>('login');
 
@@ -96,6 +112,7 @@ function App() {
             authView={authView}
             setAuthView={setAuthView}
             user={user}
+            onAuthSuccess={showSuccessToast}
         >
             <div className="min-h-screen bg-gray-50 relative">
 
@@ -103,6 +120,11 @@ function App() {
                 {authToast && (
                     <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[10000] bg-orange-500 text-white text-sm font-semibold px-6 py-3 rounded-full shadow-lg animate-bounce">
                         🔒 {authToast}
+                    </div>
+                )}
+                {successToast && (
+                    <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[10001] bg-emerald-600 text-white text-sm font-semibold px-6 py-3 rounded-full shadow-lg">
+                        ✅ {successToast}
                     </div>
                 )}
 

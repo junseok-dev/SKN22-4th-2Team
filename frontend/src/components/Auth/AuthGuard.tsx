@@ -10,6 +10,7 @@ interface AuthGuardProps {
     authView: 'login' | 'signup';
     setAuthView: (v: 'login' | 'signup') => void;
     user: User;
+    onAuthSuccess?: (message: string) => void;
 }
 
 
@@ -25,11 +26,15 @@ export const AuthGuard = (props: AuthGuardProps) => {
         setIsGuest,
         authView,
         setAuthView,
-        user
+        user,
+        onAuthSuccess
     } = props;
 
     // 로그인/회원가입 성공 시 모달 닫기
-    const handleSuccess = () => setIsGuest(true);
+    const handleSuccess = (message: string) => {
+        setIsGuest(true);
+        onAuthSuccess?.(message);
+    };
 
     return (
         <div className="relative min-h-screen">

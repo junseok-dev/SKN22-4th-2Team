@@ -68,6 +68,10 @@ export function ResultView({ idea, resultData, onReset }: ResultViewProps) {
     const reportRef = useRef<HTMLDivElement>(null);
     const [isExporting, setIsExporting] = useState(false);
     const [isEmailing, setIsEmailing] = useState(false);
+    const topPatents = Array.isArray(resultData.topPatents) ? resultData.topPatents : [];
+    const similarCount = Number.isFinite(resultData.similarCount)
+        ? resultData.similarCount
+        : topPatents.length;
 
     const handleEmailResult = async () => {
         setIsEmailing(true);
@@ -152,7 +156,7 @@ export function ResultView({ idea, resultData, onReset }: ResultViewProps) {
                     </div>
                     <div className="p-6 bg-blue-50/50 rounded-2xl border-2 border-blue-100 text-center shadow-sm">
                         <h4 className="text-gray-600 font-bold mb-2 text-sm uppercase tracking-wider">검토된 선행 특허</h4>
-                        <span className="text-4xl font-black text-blue-700 drop-shadow-sm">{resultData.similarCount}건</span>
+                        <span className="text-4xl font-black text-blue-700 drop-shadow-sm">{similarCount}건</span>
                     </div>
                     <div className="p-6 bg-slate-50 rounded-2xl border-2 border-slate-100 text-center shadow-sm">
                         <h4 className="text-gray-600 font-bold mb-2 text-sm uppercase tracking-wider">핵심 차별성</h4>
@@ -163,12 +167,12 @@ export function ResultView({ idea, resultData, onReset }: ResultViewProps) {
                 {/* 상세 분석 내용 (Card Component 매핑) */}
                 <div className="mb-10">
                     <div className="flex items-center justify-between border-b-2 border-gray-100 pb-3 mb-6">
-                        <h3 className="text-xl font-bold text-gray-800">🔍 핵심 유사 특허 분석 <span className="text-blue-500 font-black">Top {resultData.topPatents.length}</span></h3>
+                        <h3 className="text-xl font-bold text-gray-800">🔍 핵심 유사 특허 분석 <span className="text-blue-500 font-black">Top {topPatents.length}</span></h3>
                     </div>
 
-                    {resultData.topPatents.length > 0 ? (
+                    {topPatents.length > 0 ? (
                         <ul className="space-y-0">
-                            {resultData.topPatents.map((patent, idx) => (
+                            {topPatents.map((patent, idx) => (
                                 <PatentCard key={idx} patent={patent} />
                             ))}
                         </ul>
@@ -182,8 +186,8 @@ export function ResultView({ idea, resultData, onReset }: ResultViewProps) {
                 </div>
 
                 {/* Warning 반영: CSS 기반 유사도 바 차트 (특허 목록 아래 배치, recharts 미사용) */}
-                {resultData.topPatents.length > 0 && (
-                    <SimilarityBarChart patents={resultData.topPatents} />
+                {topPatents.length > 0 && (
+                    <SimilarityBarChart patents={topPatents} />
                 )}
 
                 {/* 액션 버튼 그룹 (캡쳐가 진행될 땐 숨김) */}

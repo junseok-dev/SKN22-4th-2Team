@@ -38,4 +38,4 @@ class HistoryItemResponse(BaseModel):
 
 class HistoryResponse(BaseModel):
     user_id: str = Field(..., description="사용자 ID (세션 ID에 해당)")
-    history: List[HistoryItemResponse] = Field(..., description="검색 이력 목록 (최신순)")
+    history: List[Dict[str, Any]] = Field(..., description="검색 이력 목록 (최신순)")

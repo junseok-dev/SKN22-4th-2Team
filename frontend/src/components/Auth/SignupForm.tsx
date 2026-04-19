@@ -3,7 +3,7 @@ import { useAuth } from '../../hooks/useAuth';
 
 interface SignupFormProps {
     onSwitchToLogin: () => void;
-    onSuccess?: () => void;
+    onSuccess?: (message: string) => void;
 }
 
 /**
@@ -38,7 +38,7 @@ export const SignupForm = ({ onSwitchToLogin, onSuccess }: SignupFormProps) => {
 
         try {
             await signup(email, password, name || undefined);
-            onSuccess?.();
+            onSuccess?.('회원가입 완료 되었습니다.');
         } catch (err: unknown) {
             setErrorMsg(err instanceof Error ? err.message : '회원가입에 실패했습니다.');
         }
@@ -63,6 +63,7 @@ export const SignupForm = ({ onSwitchToLogin, onSuccess }: SignupFormProps) => {
                         value={name}
                         onChange={e => setName(e.target.value)}
                         placeholder="홍길동"
+                        autoComplete="name"
                         className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition text-gray-800 text-sm"
                         disabled={isLoading}
                     />
@@ -76,6 +77,7 @@ export const SignupForm = ({ onSwitchToLogin, onSuccess }: SignupFormProps) => {
                         value={email}
                         onChange={e => setEmail(e.target.value)}
                         placeholder="your@email.com"
+                        autoComplete="username"
                         className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition text-gray-800 text-sm"
                         required
                         disabled={isLoading}
@@ -90,6 +92,7 @@ export const SignupForm = ({ onSwitchToLogin, onSuccess }: SignupFormProps) => {
                         value={password}
                         onChange={e => setPassword(e.target.value)}
                         placeholder="••••••"
+                        autoComplete="new-password"
                         className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition text-gray-800 text-sm"
                         required
                         disabled={isLoading}
@@ -104,6 +107,7 @@ export const SignupForm = ({ onSwitchToLogin, onSuccess }: SignupFormProps) => {
                         value={confirm}
                         onChange={e => setConfirm(e.target.value)}
                         placeholder="••••••"
+                        autoComplete="new-password"
                         className={`w-full px-4 py-2.5 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none transition text-gray-800 text-sm ${confirm && password !== confirm
                                 ? 'border-red-400 focus:border-red-400 bg-red-50'
                                 : 'border-gray-300 focus:border-blue-500'

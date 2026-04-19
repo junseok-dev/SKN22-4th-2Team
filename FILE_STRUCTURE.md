@@ -11,7 +11,7 @@
 | :--- | :--- | :--- |
 | `app.py` | **Streamlit 메인 앱** | UI 렌더링, 사용자 입력 처리, 전체 분석 파이프라인 호출 |
 | `main.py` | CLI 실행 엔트리포인트 | 데이터 수집(BigQuery)부터 인덱싱까지의 전체 파이프라인 제어 |
-| `requirements.txt` | 의존성 라이브러리 목록 | `pinecone-client`, `openai`, `sentence-transformers` 등 |
+| `requirements.txt` | 의존성 라이브러리 목록 | `pinecone`, `openai`, `sentence-transformers` 등 |
 | `.env` | 환경 변수 설정 | API 키, DB 설정값 관리 (깃 비공개) |
 
 ---

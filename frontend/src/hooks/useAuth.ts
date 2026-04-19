@@ -6,6 +6,7 @@ const API_BASE = import.meta.env.VITE_API_BASE_URL || '';
 
 // localStorage 키
 const TOKEN_KEY = 'shortcut_access_token';
+const AUTH_CHANGED_EVENT = 'shortcut-auth-changed';
 
 interface AuthState {
     user: UserResponse | null;
@@ -28,6 +29,12 @@ export const useAuth = (): UseAuthReturn => {
         isLoading: true,
         error: null,
     });
+
+    const emitAuthChanged = useCallback(() => {
+        if (typeof window !== 'undefined') {
+            window.dispatchEvent(new Event(AUTH_CHANGED_EVENT));
+        }
+    }, []);
 
     /** 저장된 JWT로 사용자 정보를 복원합니다 (새로고침 시) */
     const restoreUser = useCallback(async () => {
@@ -57,6 +64,23 @@ export const useAuth = (): UseAuthReturn => {
     // 마운트 시 토큰 복원
     useEffect(() => {
         restoreUser();
+
+        const handleAuthChanged = () => {
+            restoreUser();
+        };
+        const handleStorage = (event: StorageEvent) => {
+            if (event.key === TOKEN_KEY) {
+                restoreUser();
+            }
+        };
+
+        window.addEventListener(AUTH_CHANGED_EVENT, handleAuthChanged);
+        window.addEventListener('storage', handleStorage);
+
+        return () => {
+            window.removeEventListener(AUTH_CHANGED_EVENT, handleAuthChanged);
+            window.removeEventListener('storage', handleStorage);
+        };
     }, [restoreUser]);
 
     /** 로그인: 이메일 + 비밀번호 → JWT 저장 → 사용자 정보 세팅 */
@@ -95,13 +119,14 @@ export const useAuth = (): UseAuthReturn => {
 
             console.info('[useAuth] Login success:', user.email);
             setState({ user, isAuthenticated: true, isLoading: false, error: null });
+            emitAuthChanged();
         } catch (e: unknown) {
             const msg = e instanceof Error ? e.message : '로그인 중 오류가 발생했습니다.';
             console.error('[useAuth] Login failed:', e);
             setState((s: AuthState) => ({ ...s, isLoading: false, error: msg }));
             throw e; // 폼 레벨에서 처리 가능하도록 re-throw
         }
-    }, []);
+    }, [emitAuthChanged]);
 
     /** 회원가입: 이메일 + 비밀번호 + 이름 → 자동 로그인 */
     const signup = useCallback(async (email: string, password: string, name?: string) => {
@@ -135,7 +160,8 @@ export const useAuth = (): UseAuthReturn => {
     const logout = useCallback(() => {
         localStorage.removeItem(TOKEN_KEY);
         setState({ user: null, isAuthenticated: false, isLoading: false, error: null });
-    }, []);
+        emitAuthChanged();
+    }, [emitAuthChanged]);
 
     const clearError = useCallback(() => {
         setState((s: AuthState) => ({ ...s, error: null }));

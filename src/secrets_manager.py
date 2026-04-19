@@ -1,14 +1,13 @@
 """
 쇼특허(Short-Cut) – Secrets Manager 유틸리티
 =============================================
-모든 환경(로컬·프로덕션)에서 AWS Secrets Manager를 통해 시크릿을 로드합니다.
-.env 파일 의존성은 완전히 제거되었습니다.
+프로덕션에서는 AWS Secrets Manager를 통해 시크릿을 로드합니다.
+개발 환경(APP_ENV=development/dev/local)에서는 `.env` fallback을 허용합니다.
 
 우선순위:
   1. ECS Task Definition secrets 필드로 이미 주입된 환경 변수 (감지 시 SM 호출 skip)
-  2. AWS Secrets Manager → os.environ 주입
-
-로컬 개발 시에도 AWS 자격증명(~/.aws/credentials 또는 환경변수)이 필요합니다.
+  2. 개발 모드: .env fallback
+  3. AWS Secrets Manager → os.environ 주입
 """
 
 from __future__ import annotations
@@ -19,6 +18,36 @@ import os
 from typing import Optional, Dict
 
 logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# Local .env Fallback (Development Only)
+# =============================================================================
+
+def _load_from_dotenv(dotenv_path: Optional[str] = None) -> Dict[str, str]:
+    """
+    로컬 .env 파일에서 값을 읽어 딕셔너리로 반환합니다.
+
+    운영 환경 의존성을 줄이기 위해 개발 모드에서만 사용됩니다.
+    """
+    path = dotenv_path or os.getenv("DOTENV_PATH") or ".env"
+    if not os.path.exists(path):
+        return {}
+
+    try:
+        from dotenv import dotenv_values
+    except ImportError:
+        logger.warning("python-dotenv 미설치로 .env fallback을 사용할 수 없습니다.")
+        return {}
+
+    values = dotenv_values(path)
+    parsed: Dict[str, str] = {}
+    for key, value in values.items():
+        if isinstance(value, str) and value.strip():
+            parsed[key] = value.strip()
+    if parsed:
+        logger.info(".env fallback 로드 성공: %s (%d개 키)", path, len(parsed))
+    return parsed
 
 
 # =============================================================================
@@ -199,32 +228,52 @@ def bootstrap_secrets(
     secret_name = os.getenv("SECRET_NAME", secret_name)
     region = aws_region or os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION") or "ap-northeast-2"
 
-    logger.info("시크릿 부트스트랩 시작 (Secret=%s, Region=%s)", secret_name, region)
+    app_env = (os.getenv("APP_ENV") or "development").lower()
+    is_dev_mode = app_env in {"development", "dev", "local"}
+
+    logger.info(
+        "시크릿 부트스트랩 시작 (Secret=%s, Region=%s, APP_ENV=%s)",
+        secret_name,
+        region,
+        app_env,
+    )
 
     # 필수 키가 이미 모두 주입돼 있다면 Secrets Manager 호출 생략
     # (ECS Task Definition의 secrets 필드 또는 수동 환경변수 주입 케이스)
     required_keys = ["OPENAI_API_KEY", "PINECONE_API_KEY", "JWT_SECRET_KEY"]
     all_keys_present = all(os.getenv(k) for k in required_keys)
 
+    # 개발 모드에서는 .env 값을 먼저 보강하여 로컬 실행 안정성을 높입니다.
+    if not all_keys_present and is_dev_mode:
+        dotenv_secrets = _load_from_dotenv()
+        if dotenv_secrets:
+            _inject_secrets_to_env(dotenv_secrets)
+            all_keys_present = all(os.getenv(k) for k in required_keys)
+
     if all_keys_present:
         logger.info(
             "AWS Secrets Manager 호출 생략: 필수 키가 이미 환경에 존재합니다. "
-            "(ECS native secrets injection 또는 수동 설정으로 추정)"
+            "(ECS native secrets injection / .env / 수동 설정)"
         )
     else:
         try:
             secrets = _load_from_secrets_manager(secret_name, region)
             _inject_secrets_to_env(secrets)
         except Exception as exc:
-            # 시크릿 로드 실패 시 앱 기동을 중단합니다.
-            # main.py의 Fast-Fail 로직이 이후에 필수 키 부재를 감지하여
-            # 명확한 에러 메시지를 남깁니다.
-            logger.critical(
-                "AWS Secrets Manager 로드 실패: %s. "
-                "AWS 자격증명 및 SECRET_NAME/AWS_REGION 환경변수를 확인하세요.",
-                exc,
-            )
-            raise
+            # 개발 모드에서는 .env fallback이 가능하면 계속 진행합니다.
+            if is_dev_mode:
+                logger.warning(
+                    "AWS Secrets Manager 로드 실패(개발 모드): %s. .env/환경변수 기반으로 계속 진행합니다.",
+                    exc,
+                )
+            else:
+                # 운영 모드에서는 시크릿 로드 실패를 치명적으로 처리합니다.
+                logger.critical(
+                    "AWS Secrets Manager 로드 실패: %s. "
+                    "AWS 자격증명 및 SECRET_NAME/AWS_REGION 환경변수를 확인하세요.",
+                    exc,
+                )
+                raise
 
     # GCP 자격증명 처리 (GOOGLE_APPLICATION_CREDENTIALS_JSON이 설정된 경우)
     _handle_gcp_credentials()

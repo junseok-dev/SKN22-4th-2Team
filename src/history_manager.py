@@ -56,7 +56,14 @@ class HistoryManager:
             logger.error(f"Database error saving history: {e}", exc_info=True)
             return False
             
-    def load_recent(self, user_id: Optional[int] = None, session_id: Optional[str] = None, limit: int = 20) -> List[Dict]:
+    def load_recent(
+        self,
+        user_id: Optional[int] = None,
+        session_id: Optional[str] = None,
+        limit: int = 20,
+        keyword: Optional[str] = None,
+        sort_by: str = "desc",
+    ) -> List[Dict]:
         """
         Load recent analysis history.
         If user_id is provided, loads all history for that user across sessions.
@@ -71,12 +78,50 @@ class HistoryManager:
             else:
                 return []
 
-            recent_histories = (
-                query.order_by(SearchHistory.id.desc())
-                .limit(limit)
-                .all()
-            )
-            return [json.loads(record.result_json) for record in recent_histories]
+            keyword_text = (keyword or "").strip()
+            if keyword_text:
+                query = query.filter(SearchHistory.user_idea.ilike(f"%{keyword_text}%"))
+
+            if sort_by == "asc":
+                query = query.order_by(SearchHistory.timestamp.asc(), SearchHistory.id.asc())
+            elif sort_by == "risk_desc":
+                query = query.order_by(
+                    SearchHistory.score.desc(),
+                    SearchHistory.timestamp.desc(),
+                    SearchHistory.id.desc(),
+                )
+            elif sort_by == "risk_asc":
+                query = query.order_by(
+                    SearchHistory.score.asc(),
+                    SearchHistory.timestamp.desc(),
+                    SearchHistory.id.desc(),
+                )
+            else:
+                query = query.order_by(SearchHistory.timestamp.desc(), SearchHistory.id.desc())
+
+            recent_histories = query.limit(limit).all()
+
+            parsed_histories: List[Dict] = []
+            for record in recent_histories:
+                try:
+                    payload = json.loads(record.result_json)
+                    if not isinstance(payload, dict):
+                        payload = {}
+                except Exception:
+                    payload = {}
+
+                # Legacy 데이터/트리거 혼합 상황에서도 프론트가 안정적으로 읽을 수 있게 보강
+                payload.setdefault("user_idea", record.user_idea)
+                payload.setdefault(
+                    "timestamp",
+                    record.timestamp.isoformat() if isinstance(record.timestamp, datetime) else datetime.utcnow().isoformat(),
+                )
+                payload.setdefault("risk_level", record.risk_level)
+                payload.setdefault("score", record.score)
+
+                parsed_histories.append(payload)
+
+            return parsed_histories
         except Exception as e:
             logger.error(f"Failed to load recent history: {e}", exc_info=True)
             return []

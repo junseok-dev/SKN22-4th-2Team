@@ -3,7 +3,7 @@ import { useAuth } from '../../hooks/useAuth';
 
 interface LoginFormProps {
     onSwitchToSignup: () => void;
-    onSuccess?: () => void;
+    onSuccess?: (message: string) => void;
 }
 
 /**
@@ -26,7 +26,7 @@ export const LoginForm = ({ onSwitchToSignup, onSuccess }: LoginFormProps) => {
         }
         try {
             await login(email, password);
-            onSuccess?.();
+            onSuccess?.('로그인 되셨습니다.');
         } catch (err: unknown) {
             setErrorMsg(err instanceof Error ? err.message : '로그인에 실패했습니다.');
         }
@@ -49,6 +49,7 @@ export const LoginForm = ({ onSwitchToSignup, onSuccess }: LoginFormProps) => {
                         value={email}
                         onChange={e => setEmail(e.target.value)}
                         placeholder="your@email.com"
+                        autoComplete="username"
                         className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition text-gray-800 text-sm"
                         required
                         disabled={isLoading}
@@ -63,6 +64,7 @@ export const LoginForm = ({ onSwitchToSignup, onSuccess }: LoginFormProps) => {
                         value={password}
                         onChange={e => setPassword(e.target.value)}
                         placeholder="••••••"
+                        autoComplete="current-password"
                         className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition text-gray-800 text-sm"
                         required
                         disabled={isLoading}

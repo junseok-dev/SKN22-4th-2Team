@@ -7,6 +7,8 @@
 .env.local
 *.key
 secrets/
+run_local.bat
+run_local.sh
 
 # =============================================================================
 # Python

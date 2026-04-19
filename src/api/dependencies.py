@@ -11,25 +11,43 @@ from src.api.services.security import decode_token
 
 logger = logging.getLogger(__name__)
 
-# 싱글턴 인스턴스 재사용
+# 싱글턴 인스턴스 및 초기화 상태 트래킹
 _patent_agent = None
+_init_error = None
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login", auto_error=False)
 
 
 def get_patent_agent() -> PatentAgent:
-    global _patent_agent
-    if _patent_agent is None:
-        logger.info("Initializing PatentAgent instance...")
-        try:
-            _patent_agent = PatentAgent()
-            logger.info("PatentAgent initialized successfully.")
-        except Exception as e:
-            logger.error(
-                f"PatentAgent 초기화 실패: {type(e).__name__}: {e}",
-                exc_info=True,
-            )
-            raise
+    global _patent_agent, _init_error
+    
+    # 이미 초기화 성공한 경우 그대로 반환
+    if _patent_agent is not None:
+        return _patent_agent
+        
+    # 이전 초기화 과정에서 치명적 에러가 발생했던 경우, 
+    # 매 요청마다 무거운 초기화를 반복하지 않고 즉시 에러 리턴
+    if _init_error is not None:
+        logger.error(f"Analysis engine is in failed state: {_init_error}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"분석 엔진 초기화 실패 상태입니다. 관리자에게 문의하세요. (Error: {_init_error})"
+        )
+
+    logger.info("Initializing PatentAgent instance...")
+    try:
+        _patent_agent = PatentAgent()
+        logger.info("PatentAgent initialized successfully.")
+    except Exception as e:
+        _init_error = f"{type(e).__name__}: {str(e)}"
+        logger.error(
+            f"PatentAgent 초기화 실패: {_init_error}",
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"분석 엔진(PatentAgent) 초기화 중 오류가 발생했습니다: {_init_error}"
+        )
     return _patent_agent
 
 def get_history_manager(db: Session = Depends(get_db)) -> HistoryManager:
@@ -80,4 +98,3 @@ async def get_optional_current_user(
         return db.query(User).filter(User.id == int(user_id)).first()
     except Exception:
         return None
-

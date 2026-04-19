@@ -124,3 +124,31 @@ def verify_db_connection() -> dict:
         logger.error("DB 연결 검증 실패: %s", exc, exc_info=True)
         return {"ok": False, "error": str(exc)}
 
+
+def ensure_schema_compatibility() -> None:
+    """
+    로컬 SQLite 스키마의 하위 호환성을 보정합니다.
+
+    현재 보정 항목:
+      - usersession.user_id 컬럼 누락 시 자동 추가
+      - usersession.user_id 인덱스 누락 시 자동 생성
+    """
+    eng = _get_engine()
+    # 운영(PostgreSQL)은 Alembic 마이그레이션 기준으로 관리하고,
+    # 로컬 SQLite만 경량 자동 보정을 수행합니다.
+    if not str(eng.url).startswith("sqlite"):
+        return
+
+    try:
+        with eng.begin() as conn:
+            rows = conn.execute(text("PRAGMA table_info(usersession)")).fetchall()
+            existing_cols = {r[1] for r in rows}  # r[1] == column name
+
+            if "user_id" not in existing_cols:
+                logger.warning("usersession.user_id 컬럼이 없어 자동 추가를 수행합니다.")
+                conn.execute(text("ALTER TABLE usersession ADD COLUMN user_id INTEGER"))
+
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_usersession_user_id ON usersession (user_id)"))
+    except Exception as exc:
+        logger.error("스키마 호환성 보정 실패: %s", exc, exc_info=True)
+        raise
